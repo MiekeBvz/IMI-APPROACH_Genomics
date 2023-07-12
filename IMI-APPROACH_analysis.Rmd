@@ -1,0 +1,295 @@
+---
+title: "IMI-APPROACH genetic analysis r code"
+output: html_document
+date: "2023-04-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(dplyr)
+#install.packages("qqman")   # https://cran.r-project.org/web/packages/qqman/vignettes/qqman.html
+library("qqman")  
+library(ggplot2)
+library(ggpmisc)
+library(ggpubr)
+```
+
+  Change directories in row:
+    - 28
+    - 161
+
+## Quality control using Plink:
+  Download plink: https://www.cog-genomics.org/plink/
+  Make sure you put the .bim/.bed/.fam data files and the plink program in your working directory before starting the analysis.
+  
+```{r pressure, echo=FALSE}
+setwd("~/your_working_directory")
+
+# Sex control
+system("plink --bfile data_1 --check-sex --out sex_check")
+sex_problem_ids <- read.csv("~/sex_check.sexcheck", sep="") 
+sex_problem_ids <- subset(sex_problem_ids, STATUS == 'PROBLEM')
+write.table(sex_problem_ids, "sex_check.sexprobs",sep = "\t", quote = FALSE, row.names = FALSE)
+system("plink --bfile data_1 --remove sex_check.sexprobs --make-bed --out data_2 ")
+
+# Missing rate per individual
+system("plink --bfile data_2 --mind 0.05 --make-bed --out data_3")
+
+# Heterozygosity rate
+system("plink --bfile data_3 --het ")
+
+# Calculate heterozygosity rate: 
+hzg <- read.table("plink.het", head=TRUE)
+hzg$hzg_rate <- (hzg$"N.NM."-hzg$"O.HOM.")/hzg$"N.NM."
+hzg_outliers <- subset(hzg, (hzg$hzg_rate < mean(hzg$hzg_rate)-3*sd(hzg$hzg_rate)) | (hzg$hzg_rate > mean(hzg$hzg_rate)+3*sd(hzg$hzg_rate)));
+hzg_outliers$hzg_dst = (hzg_outliers$R)
+write.table(hzg_outliers, "heterozygosity_outliers.txt", row.names=FALSE, sep = " ", quote = FALSE) 
+
+# remove outliers
+system("plink --bfile data_3 --remove heterozygosity_outliers.txt --make-bed --out data_4")
+
+# Check sample relationships or duplicates:
+#system("plink --bfile data_4 --extract data_reduced_SNP_set.prune.in --genome 0.1875 --make-bed --out data_5 ")
+
+# Remove ethnic outliers:
+system("plink --bfile data_4 --remove Ethnic_outliers.txt --make-bed --out data_5")
+# Remove related individuals:
+system("plink --bfile data_5 --remove Related_individuals.txt --make-bed --out data_6")
+
+# Missing rate per SNP 
+system("plink --bfile data_6 --missing --out data_5_missing")
+system("plink --bfile data_6 --geno 0.05 --make-bed --out data_7")
+
+# Hardy Weinberg Equilibrium
+system("plink --bfile data_7 --hardy")
+system("plink --bfile data_7 --hwe 1e-6 --make-bed --out data_8")
+
+# Optional: also exclude SNPs that fail the HWE test including the cases, with a less stringent threshold
+#system("plink --bfile data_8 --hwe 1e-10 --hwe-all --make-bed --out data_8")
+
+# Minor Allele Frequency
+system("plink --bfile data_8 --freq --out MAF_check")
+system("plink --bfile data_8 --maf 0.05 --make-bed --out data_9 ")
+```
+
+
+# Create plots illustrating the QC steps:
+  Reported sex versus genetic sex
+```{r setup, include=FALSE}
+x_hzg <- read.table("sex_check.sexcheck", header = TRUE)
+png(file="Sex_control.png", width = 600, height = 500)
+plot(x_hzg$PEDSEX, xlab = "Reported Sex", x_hzg$F, ylab = "X Chromosome heterozygosity",xlim=c(-0.2, 2.2), main = "Reported sex versus sex based on SNPs", col = "darkblue", xaxt = "n", cex.lab = 1.3, cex.main=1.4, cex.axis=1.2) 
+axis(1, at=0:2, labels = c("None", "Male", "Female"), cex.axis=1.2)
+grid()
+segments(x0 = 0.75, x1 = 1.25, y0=1, y1=1, lwd=2, col = "darkgreen", lty = 2)
+segments(x0 = 1.75, x1 = 2.25, y0=0, y1=0, lwd=2, col = "darkgreen", lty= 2)
+dev.off()
+```
+
+  Missing per SNP
+```{r setup, include=FALSE}
+SNPmissingness = read.table("plink.lmiss", header = TRUE)
+png(file="SNP_missing.png", width = 600, height = 500)
+hist_miss = hist(SNPmissingness$F_MISS, xlab = "Missing per SNP", ylab = "Frequency", ylim = c(0,2500000), main = "Missing rate per SNP" ,  cex.lab = 1.3, cex.main=1.4, cex.axis=1.2)
+segments(x0 = 0.2, x1 = 0.2, y0=0, y1=2500000, lwd=2, col = "red", lty= 2)
+dev.off()
+```
+
+  Heterozygosity versus missingess
+  -> Depending on the heterozygosity and missing rate of your data, the segments could be different: in that case change xlim and ylim to proper limits. 
+```{r setup, include=FALSE}
+individual_missingness <- read.table("plink.imiss", header = TRUE)  
+png(file="heterozygosity_vs_SNP_missingness.png", width = 600, height = 500)
+plot(individual_missingness$F_MISS, hzg$hzg_rate, xlab = "SNP missing rate", ylab = "Heterozygosity rate", main = "Missingess and heterozygosity across samples", col= "darkblue", xlim = c(0,0.032), ylim = c(0.23, 0.27),  cex.lab = 1.3, cex.main=1.4, cex.axis=1.2)
+grid()
+segments(x0 = -0.8, x1 = 0.035, y0=0.242913, y1=0.242913, lwd=2, col = "red", lty = 2)
+segments(x0 = -0.80, x1 = 0.035, y0=0.2620904, y1=0.2620904, lwd=2, col = "red", lty= 2)
+segments(x0 = 0.03, x1 = 0.03, y0=0.22, y1=0.279, lwd=2, col = "red", lty= 2)
+segments(x0 = -0.8, x1 = 0.035, y0=0.2493055, y1=0.2493055, lwd=2, col = "lightgray", lty = 2)  #1 sd
+segments(x0 = -0.8, x1 = 0.035, y0=0.2556979, y1=0.2556979, lwd=2, col = "lightgray", lty = 2)
+segments(x0 = -0.8, x1 = 0.035, y0=0.2461092, y1=0.2461092, lwd=2, col = "lightgray", lty = 2)  # 2 sd
+segments(x0 = -0.8, x1 = 0.035, y0=0.2588942, y1=0.2588942, lwd=2, col = "lightgray", lty = 2)
+dev.off()
+```
+
+  Plot Hardy Weinberg Equilibrium (HWE)
+```{r setup, include=FALSE}
+HWE = read.table("plink.hwe", header = TRUE)
+HWE_ALL = subset(HWE, HWE$TEST=="ALL")
+png(file="HWE_all_pvalues.png", width = 600, height = 500)
+hist_hwe = hist(-log(HWE_ALL$P), breaks = 40, main = "HWE p-values", xlab = expression("-log"[10]*"(HWE p-value)"), ylab = "Frequency/NR of SNPs")
+plot(hist_hwe, xlim = c(0,45), ylim = c(0, 2000000),  cex.lab = 1.3, cex.main=1.4, cex.axis=1.2, main = "HWE p-values", xlab = "-log(HWE p-value)")
+grid()
+segments(x0 = 11.51293, x1 = 11.51293, y0=0, y1=2700000, lwd=2, col = "red", lty= 2)
+dev.off()
+```
+
+  Plot minor allele frequency (MAF); y = # of SNPs, x = MAF , vertical segment is x = 5%
+```{r setup, include=FALSE}
+MAF <- read.table("MAF_check.frq", header = TRUE)
+options(scipen=999)
+png(file="Minor allele Frequency.png", width = 600, height = 500)
+hist_maf = hist(MAF$MAF, breaks=50)
+plot(hist_maf, ylim = c(0, 1000000),ylab = "Frequency", xlab = "Minor Allele Frequency", main = "Minor Allele Frequency",  cex.lab = 1.3, cex.main=1.4, cex.axis=1.2)
+abline(v=0.05, col='red', lwd=2, lty = 2)
+dev.off()
+```
+
+## Update kgp to rsIDs (only if necessary):
+  Downloaded data from: https://emea.support.illumina.com/array/array_kits/humanomni2-5exome-8-beadchip-kit/downloads.html
+  Put the data file in the current working directory
+```{r setup, include=FALSE}
+Illumina_rsids <- read.delim("/InfiniumOmni2-5Exome-8v1-5_A1_b151_rsids.txt")
+rs_ids <- subset(Illumina_rsids, RsID != ".")   # Only keep non-empty rows
+split_rsid <- separate(rs_ids, col= RsID, into = c('RsID1', 'RsID2', 'RsID3', 'RsID4', 'RsID5', 'RsID6', 'RsID7'), sep = ' ')
+split_rsid |> select(Name, RsID1) |> write.csv(file = 'kgp_to_rsID.txt', sep = "  ", row.names = FALSE, quote = FALSE)
+
+system("plink --bfile data_9 --update-name kgp_to_rsID.txt --make-bed --out data_10")
+
+# Remove duplicates from data
+system("plink --bfile data_10 --list-duplicate-vars suppress-first")
+system("plink --bfile data_10 --exclude plink.dupvar --make-bed --out final_data")
+```
+
+## Association analysis in Plink: Manhattan plot      
+  Make sure to have the following files ready in your working directory:
+    - A binary_phenotypes.txt or continuous_phenotypes.txt file with your phenotype(s) (columns:'FID', 'IID', 'Phenotype_1', 'Phenotype_2', etc.)
+    - Optionally: covariates.txt file with covariates (columns: 'FID', 'IID', 'covariate_1', 'covariate_2', etc.). Make sure no missing values are present.
+
+```{r setup, include=FALSE}
+setwd("~/your_working_directory")
+  # Logistic : for binary phenotypes 
+#system("plink --bfile final_data --pheno binary_phenotypes.txt --all-pheno --logistic --covar covariates.txt --covar-name Age,Gender,Disease_duration --out Associations_logistics")
+  # Remove 'NA' value from the results (to make the file smaller / faster to work with)
+#system("awk '!/'NA'/' Associations_logistics.assoc > Associations_logistics_filtered.assoc")
+
+  # Linear: for continuous phenotypes
+#system("plink --bfile final_data --pheno continuous_phenotypes.txt --all-pheno --linear --covar covariates.txt --out Associations_linear")
+system("plink --bfile final_data --pheno Continuous_minJSW.txt --all-pheno --linear --covar Covariates_with_minJSW.txt --out Associations_linear")
+system("awk '!/'NA'/' Associations_linear.assoc > Associations_linear_filtered.assoc")
+
+```
+
+  Significant SNPs; Make a .txt file of significant SNPs from the Manhattan plots 
+```{r setup, include=FALSE}
+results_association <- read.csv("Associations_linear.P1.assoc.linear", sep="", head = TRUE)
+
+Significant_association_results_e8 <- subset(results_association, results_association$P<5e-08)
+write.table(Significant_association_results_e8$SNP, file="Association_SNPs_e8.txt", row.names=FALSE, col.names=FALSE)
+Significant_association_results_e5 <- subset(results_association, results_association$P<1e-05)
+write.table(Significant_association_results_e5$SNP, file="Association_SNPs_e5.txt", row.names=FALSE, col.names=FALSE)
+```
+
+## Plot Results Association analysis
+  Create the Manhattan plot 
+```{r setup, include=FALSE}
+results_association <- read.csv("Associations_linear.P1.assoc.linear", sep="", head = TRUE)
+results_association <- subset(results_association, TEST == "ADD")
+
+#Highlight SNPs from literature (https://doi.org/10.1016/j.cell.2021.07.038 , https://doi.org/10.1016/j.joca.2021.03.002)
+highlight_SNPs <- c("rs11588154", "rs4411121", "rs1327123", "rs11588850", "rs74676797", "rs66989638", "rs2276749", "rs62242105", "rs781661531", "rs747952496", "rs9835230", "rs201194999", "rs11729628", "rs75686861", "rs2066928", "rs56132153", "rs1560080", "rs17615906", "rs10062749", "rs9396861", "rs2038740", "rs116934101", "rs12667224", "rs571734653", "rs7787744", "rs76340814", "rs79895530", "rs7862601", "rs10983775", "rs10465114", "rs3740129", "rs10824456", "rs3993110", "rs1631174", "rs72979233", "rs10831475", "rs10842226", "rs7967762", "rs1426371", "rs58973023", "rs28929474", "rs746239049", "rs12914479", "rs6500609", "rs227732", "rs9908159", "rs1039257158", "rs551471509", "rs8112559", "rs9981884", "rs11705555", "rs12160491", "rs11164653", "1:150214028", "rs10797923", "rs2605100", "rs7581446", "rs3771501", "rs62182810", "rs3774354", "rs1530586", "rs1913707", "rs13107325", "rs3884606", "rs79220007", "rs2856821", "rs17288390", "rs9475400", "rs12209223", "rs111844273", "rs143083812", "rs11984666", "rs10974438", "rs72760655", "rs1330349", "rs1321917", "rs62578126", "rs1517572", "rs67924081", "rs34560402", "rs1149620", "rs7294636", "rs10843013", "rs17120227", "rs7953280", "rs753350451", "rs1809889", "rs4380013", "rs11071366", "rs12908498", "rs9940278", "rs34195470", "rs216175", "rs7212908", "rs2716212", "rs10405617", "rs75621460", "rs4252548", "rs143384", "rs9981408", "rs116112221", "rs10282983", "rs10453201", "rs148693048", "rs3753841", "rs2126643", "rs4338381", "chr1:150214028", "rs550034492", "rs11583641", "rs2820436", "rs2785988", "rs2820443", "rs10916199", "rs10218792", "rs2061027", "rs2061026", "rs2862851", "rs3771501", "rs12470967", "rs62182810", "rs7639618", "rs62262139", "rs11177", "rs6976", "rs3774355", "rs678", "rs12107036", "rs11732213", "rs1913707", "rs34811474", "rs11335718", "rs13107325", "rs10471753", "rs35611929", "rs3884606", "rs1800562", "rs115740542", "rs10947262", "rs7775228", "rs9277552", "rs12154055", "rs10948155", "rs10948172", "rs2396502", "rs1997995", "rs12206662", "rs80287694", "rs12209223", "rs9350591", "rs143083812", "rs11764536", "rs788748", "rs11409738", "rs3815148", "rs4730250", "rs7792864", "rs330050", "rs4733724", "rs60890741", "rs11780978", "rs10116772", "rs10974438", "rs116882138", "rs1078301", "rs919642", "rs1330349", "rs2480930", "rs4836732", "rs13283416", "rs34687269", "rs10760442", "rs62578127", "rs17659798", "rs11031191", "rs2070852", "rs10896015", "rs34419890", "rs1149620", "rs4764133", "rs10492367", "rs10843013", "rs12049916", "rs79056043", "rs317630", "rs11105466", "rs2171126", "rs835487", "rs11059094", "rs1060105", "rs56116847", "rs4765540", "rs11842874", "rs35912128", "rs4775006", "rs3204689", "rs12901372", "rs12901071", "rs35206230", "rs9930333", "rs8044769", "rs6499244", "rs34195470", "rs864839", "rs1126464", "rs35087650", "rs8067763", "rs2953013", "rs62063281", "rs547116051", "rs7222178", "rs2521349", "rs10502437", "rs11880992", "rs12982744", "rs1560707", "chr19:18,898,330", "rs375575359", "rs75621460", "rs4252548", "rs143384", "rs143383", "rs6094710", "rs6516886", "rs2836618", "rs117018441", "rs532464664", "rs528981060")
+
+
+jpeg("association_manhattan_plot.jpeg", width = 1400, height = 1060, pointsize = 30)
+manhattan(results_association,highlight = highlight_SNPs, chr="CHR",bp="BP",p="P",snp="SNP", main = "",  cex.lab = 1.3, cex.main=1.4, cex.axis=1, suggestive=FALSE, chrlabs = c(0:22, "MT"), ylim = c(0,20))  #col = c("blue3", "darkorange1"),)
+dev.off()
+
+jpeg("QQ-Plot.jpeg")
+qq(results_association$P, main = "Q-Q plot of GWAS")
+dev.off()
+
+```
+
+## Polygenic risk score
+Inspiration for the following code been taken from: Choi, S.W., Mak, T.S. & O’Reilly, P.F. Tutorial: a guide to performing polygenic risk score analyses. Nat Protoc (2020). https://doi.org/10.1038/s41596-020-0353-1
+
+  Make sure to create a file: "SNPs_summary_statistics.txt" which contains the following columns:
+    - CHR
+    - BP
+    - SNP
+    - A1
+    - A2
+    - N
+    - SE
+    - P
+    - OR
+```{r}
+system("plink --bfile final_data --make-bed --out final_data_for_PRS") #Make a copy of your final data for calculating the PRS
+system("plink --bfile final_data_for_PRS --write-snplist --out final_data_for_PRS")
+
+bim_file <- read.table("final_data_for_PRS.bim")
+colnames(bim_file) <- c("CHR", "SNP", "CM", "BP", "bim.A1", "bim.A2") #Rename the column names
+our_snps <- read.table("final_data_for_PRS.snplist", header = FALSE, stringsAsFactors = FALSE) # Read in our_snps data
+association <- read.table("SNPs_summary_statistics.txt", header = T, stringsAsFactors=F, sep ="\t") # Read in the statistics of the alleles; 
+association$A1 <- toupper(association$A1)
+association$A2 <- toupper(association$A2)
+bim_file$bim.A1 <- toupper(bim_file$bim.A1)
+bim_file$bim.A2 <- toupper(bim_file$bim.A2) 
+
+merged_data <- merge(bim_file, association, by = c("SNP", "CHR", "BP")) # Merge summary statistic of GWAS with our data
+merged_data <- merged_data[merged_data$SNP %in% our_snps$V1,] 	# Filter qc'ed SNPs
+make_complementary <- function(x) { switch (x, "A" = "T", "C" = "G", "T" = "A", "G" = "C", return(NA)  )  } # Function for finding the complementary allele
+merged_data.matching <- subset(merged_data, A1 == bim.A1 & A2 == bim.A2)  # Get SNPs that have the same alleles across base and target
+
+# Make sure SNPs are not complementary between base and target data
+merged_data$C.A1 <- sapply(merged_data$bim.A1, make_complementary)
+merged_data$C.A2 <- sapply(merged_data$bim.A2, make_complementary)
+merged_data.make_complementary <- subset(merged_data, A1 == C.A1 & A2 == C.A2)
+head(merged_data)
+complement.snps <- bim_file$SNP %in% merged_data.make_complementary$SNP
+bim_file[make_complementary.snps,]$bim.A1 <-sapply(bim_file[make_complementary.snps,]$bim.A1, make_complementary)
+bim_file[make_complementary.snps,]$bim.A2 <- sapply(bim_file[make_complementary.snps,]$bim.A2, make_complementary)
+merged_data.crecode <- subset(merged_data, A1 == C.A2 & A2 == C.A1)
+
+compl_snps <- bim_file$SNP %in% merged_data.crecode$SNP
+saved_bim <- bim_file[compl_snps,]$bim.A1
+bim_file[compl_snps,]$bim.A1 <- as.character(sapply(bim_file[compl_snps,]$bim.A2, make_complementary))
+bim_file[compl_snps,]$bim.A2 <- as.character(sapply(saved_bim, make_complementary)) # Write an updated .bim file
+
+merged_data.recode <- subset(merged_data, A1 == bim.A2 & A2 == bim.A1)
+recode.snps <- bim_file$SNP %in% merged_data.recode$SNP
+saved_bim <- bim_file[recode.snps,]$bim.A1
+bim_file[recode.snps,]$bim.A1 <- bim_file[recode.snps,]$bim.A2
+bim_file[recode.snps,]$bim.A2 <- saved_bim
+
+write.table(bim_file[,c("SNP", "bim.A1")], "final_data_for_PRS.a1", quote = FALSE, row.names = FALSE, col.names =FALSE, sep="\t")
+write.table(bim_file, "final_data_for_PRS.bim", quote = FALSE, row.names = FALSE, col.names =FALSE, , sep="\t")
+mismatch <- bim_file$SNP[!(bim_file$SNP %in% merged_data.matching$SNP |  bim_file$SNP %in%  merged_data.make_complementary$SNP |  bim_file$SNP %in% merged_data.recode$SNP | bim_file$SNP %in% merged_data.crecode$SNP)] 	
+write.table( mismatch, "final_data_for_PRS.mismatch", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# calculate beta score
+summary_stat <- read.delim("SNPs_all_summary_statistics.txt")
+summary_stat <- summary_stat[!(is.na(summary_stat$OR) | summary_stat$OR == ""),]
+summary_stat$OR <- sapply(summary_stat$OR, as.numeric)
+summary_stat$BETA <- log(summary_stat$OR) 
+write.table(summary_stat, "SNPs_all_summary_statistics_beta.txt", quote=F, row.names=F)
+
+# Calculate the polygenic risk score
+system("./plink --bfile final_data_for_PRS --pheno phenotypes_continuous.txt --pheno-name phenotype_1 --score SNPs_all_summary_statistics_beta.txt 3 4 10 --score-no-mean-imputation --q-score-range range_list SNP.pvalue --out './PRS_phenotype_1' ")
+
+file_names_list <- c('phenotype_1') # Add all other phenotypes to this list
+
+pheno_type <- "continuous"
+phenotypes <- read.table(paste("phenotypes_", pheno_type, ".txt", sep = ""), header=T) 
+covariates <- read.table("Covariates_MDS_no_NA.txt", header=T)   #pcs
+covar <- get(paste("covar_", pheno_type, sep=""))
+
+for(nn in file_names_list){  
+file_name <- paste("./PRS_", nn, sep="")
+prs <- read.table(paste(file_name,".0.001.profile", sep = ""), header=T)
+phenotype <- subset(get(phenotypes), select= c("FID", "IID", nn))
+phenotype[nn] <- phenotype[nn]-1
+
+sex <- subset(covar, select = c(FID, IID, Gender)) 
+levels(sex$Gender) <- c("Male", "Female")
+dat <- merge(merge(prs, phenotype), sex, by=c("FID", "IID"))
+pdf(file = paste("./PRS_plot_", nn, "_", pheno_type, ".pdf", sep=""),  width = 4, height = 4) 
+plot(x=dat$SCORE, y=dat[[nn]], col="white", xlab="Polygenic Score", ylab= paste(nn))
+with(subset(dat, Gender =="Male"), points(x=SCORE, y= eval(parse(text = paste(nn))), col="red"))
+with(subset(dat, Gender =="Female"), points(x=SCORE, y= eval(parse(text = paste(nn))), col="blue"))
+dev.off()
+}
+
+```
+
